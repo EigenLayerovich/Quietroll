@@ -8,6 +8,8 @@ then tracks every recipient until paid and exports receipts.
 
 Entry for the [MultiHopper Build & Route Challenge](https://superteam.fun/earn/listing/multihopper-build-and-route-challenge-up-to-dollar50000-revenue-share-1).
 
+Live demo: <https://quietroll.vercel.app> (demo mode: payouts are simulated until an API key is configured).
+
 ## Status
 
 | | |
@@ -95,7 +97,8 @@ Then mainnet:
    fails with `MH_091`.
 5. Ask in the [builder chat](https://t.me/multihopperbuilderportal) how your integration is identified for
    the challenge. The rules require this before volume counts.
-6. Deploy to Vercel, set the env vars with `NEXT_PUBLIC_SOLANA_CLUSTER=mainnet`, redeploy, and send a small
+6. The Vercel project deploys every push to `main`. Set the env vars there with
+   `NEXT_PUBLIC_SOLANA_CLUSTER=mainnet`, redeploy so they take effect, and send a small
    real payout yourself before inviting anyone.
 
 ## Challenge evidence
