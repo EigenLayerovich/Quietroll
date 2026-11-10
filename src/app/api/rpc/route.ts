@@ -10,8 +10,11 @@ const ALLOWED = new Set(["sendTransaction", "getSignatureStatuses", "getBalance"
 
 export const POST = authed(async (_ctx, req: Request) => {
   if (mh().mock) throw new HttpError(400, "DEMO_MODE", "No chain access in demo mode");
-  const url = process.env.SOLANA_RPC_URL;
-  if (!url) throw new HttpError(500, "CONFIG", "SOLANA_RPC_URL is not configured");
+  const url = process.env.SOLANA_RPC_URL?.trim();
+  // Must be a full endpoint URL. A bare provider API key is a common mistake.
+  if (!url || !/^https:\/\/\S+$/.test(url) || !URL.canParse(url)) {
+    throw new HttpError(500, "CONFIG", "SOLANA_RPC_URL is missing or is not a full https:// RPC URL. Fix it in the server settings and redeploy.");
+  }
   const b = await readJson<{ method?: string; params?: unknown[] }>(req);
   if (!b.method || !ALLOWED.has(b.method)) throw new HttpError(400, "BAD_REQUEST", "RPC method not allowed");
   const res = await fetch(url, {
