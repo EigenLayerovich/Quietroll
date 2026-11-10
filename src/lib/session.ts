@@ -17,9 +17,11 @@ const g = globalThis as unknown as { __qrSecret?: string };
 function secret(): string {
   const s = process.env.SESSION_SECRET?.trim();
   if (s && s.length >= 32) return s;
-  if (process.env.MH_API_KEY?.trim()) {
-    // Never run against the real API with a guessable or per-process secret.
-    throw new Error("SESSION_SECRET (32+ chars) must be set when MH_API_KEY is configured");
+  if (process.env.MH_API_KEY?.trim() || process.env.VERCEL) {
+    // Never run against the real API with a per-process secret, and never on
+    // a serverless host, where every instance would generate a different one
+    // and sign-ins would fail at random.
+    throw new Error("SESSION_SECRET (32+ chars) must be set for this deployment");
   }
   return (g.__qrSecret ??= randomBytes(32).toString("hex"));
 }

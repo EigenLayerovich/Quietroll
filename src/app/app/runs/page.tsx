@@ -19,6 +19,13 @@ interface RunSummary {
   deliveredRaw: bigint;
 }
 
+// Summary figures show at most six decimals; receipts carry the exact amounts.
+const trim = (v: string) => {
+  const [w, f = ""] = v.split(".");
+  const frac = f.slice(0, 6).replace(/0+$/, "");
+  return frac ? `${w}.${frac}` : w;
+};
+
 export default function Runs() {
   const app = useApp();
   const [remote, setRemote] = useState<Transfer[] | null>(null);
@@ -105,7 +112,7 @@ export default function Runs() {
                         {r.completed}/{r.routes}
                       </td>
                       <td className="num">
-                        {token ? `${fromRaw(r.deliveredRaw, token.decimals)} ${token.symbol}` : "—"}
+                        {token ? `${trim(fromRaw(r.deliveredRaw, token.decimals))} ${token.symbol}` : "—"}
                       </td>
                       <td>
                         <span className={`badge ${done ? "badge-good" : r.sent > 0 ? "badge-warn" : ""}`}>

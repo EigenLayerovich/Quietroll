@@ -22,10 +22,44 @@ const SCREENING_PER_WALLET = 2_000_000;
 const HOP_MS = 2_500;
 const PAYOUT_MS = 700;
 
-interface Sim {
-  transfer: Transfer;
+/**
+ * The minimum needed to rebuild a simulated transfer. Everything else (fees,
+ * status, hop progress, payouts) is derived from this and the clock, so the
+ * simulator holds no state of its own between requests.
+ */
+export interface SimState {
+  id: number;
+  externalId: string | null;
+  tokenMint: string;
+  tokenSymbol: string | null;
+  amountRaw: string;
+  amountTokens: string;
+  sourceOwner: string;
+  recipientWallet: string | null;
+  /** [wallet, share of amountRaw] per destination, or null for one recipient. */
+  destinations: [string, string][] | null;
+  hops: number;
+  arrivalSeconds: number;
+  createdAt: number;
   keeperFunded: boolean;
   startedAt: number | null;
+}
+
+/** Where simulated transfers are kept. Must not rely on server memory in production. */
+export interface SimStore {
+  all(): Promise<SimState[]>;
+  put(state: SimState): Promise<void>;
+}
+
+/** In-process store, for unit tests. */
+export class MemorySimStore implements SimStore {
+  private sims = new Map<number, SimState>();
+  async all() {
+    return [...this.sims.values()].map((s) => structuredClone(s));
+  }
+  async put(state: SimState) {
+    this.sims.set(state.id, structuredClone(state));
+  }
 }
 
 function fakeSig(seed: string): string {
@@ -39,27 +73,100 @@ function fakeSig(seed: string): string {
   return `demo${out}`;
 }
 
+function quote(amountRaw: bigint, isSol: boolean, hops: number) {
+  const flat = BigInt(FLAT_PER_HOP * hops);
+  // Fee is charged on the delivered amount: hop + floor(hop*bps/1e4) <= spendable.
+  const spendable = isSol ? amountRaw - flat : amountRaw;
+  if (spendable <= 0n) throw new MhError("MH_016", "Amount does not cover the fee", 400);
+  let hop = (spendable * 10_000n) / BigInt(10_000 + PERCENT_FEE_BPS);
+  while (hop + (hop * BigInt(PERCENT_FEE_BPS)) / 10_000n < spendable) hop += 1n;
+  while (hop + (hop * BigInt(PERCENT_FEE_BPS)) / 10_000n > spendable) hop -= 1n;
+  return { hop, fee: (hop * BigInt(PERCENT_FEE_BPS)) / 10_000n, flat };
+}
+
+/** Rebuild the full transfer, advancing its lifecycle from the time since activation. */
+export function viewTransfer(s: SimState, now = Date.now()): Transfer {
+  const q = quote(BigInt(s.amountRaw), s.tokenMint === SOL_MINT, s.hops);
+  const elapsed = s.startedAt === null ? -1 : now - s.startedAt;
+  const hopsDone = elapsed < 0 ? 0 : Math.min(s.hops, Math.floor(elapsed / HOP_MS));
+  const hopsEnd = (s.startedAt ?? 0) + s.hops * HOP_MS;
+
+  let destinations: Transfer["destinations"] = null;
+  let paid = 0;
+  if (s.destinations) {
+    const total = BigInt(s.amountRaw);
+    const count = s.destinations.length;
+    paid = hopsDone < s.hops ? 0 : Math.min(count, Math.floor((elapsed - s.hops * HOP_MS) / PAYOUT_MS));
+    let assigned = 0n;
+    destinations = s.destinations.map(([wallet, share], i) => {
+      const amt = i === count - 1 ? q.hop - assigned : (BigInt(share) * q.hop) / total;
+      assigned += amt;
+      const isPaid = i < paid;
+      return {
+        wallet,
+        amountRaw: amt.toString(),
+        status: isPaid ? "paid" : "pending",
+        payoutSignature: isPaid ? fakeSig(`${s.id}p${i}`) : null,
+        paidAt: isPaid ? new Date(hopsEnd + (i + 1) * PAYOUT_MS).toISOString() : null,
+      };
+    });
+  }
+
+  const done = hopsDone === s.hops && (!s.destinations || paid === s.destinations.length);
+  const status: Transfer["status"] =
+    s.startedAt === null ? "quote" : done ? "completed" : elapsed < 1500 ? "processing" : "active";
+
+  return {
+    id: s.id,
+    externalId: s.externalId,
+    supportBundleId: `MH-demo-${s.id}`,
+    tokenMint: s.tokenMint,
+    tokenSymbol: s.tokenSymbol,
+    amountRaw: s.amountRaw,
+    amountTokens: s.amountTokens,
+    sourceOwner: s.sourceOwner,
+    recipientWallet: s.recipientWallet,
+    destinationCount: s.destinations?.length ?? null,
+    destinations,
+    hops: s.hops,
+    arrivalSeconds: s.arrivalSeconds,
+    percentFeeBps: PERCENT_FEE_BPS,
+    percentFeeRaw: q.fee.toString(),
+    totalFlatFeeLamports: Number(q.flat),
+    recipientReceivesRaw: q.hop.toString(),
+    status,
+    phase: s.startedAt === null ? "quoted" : done ? "settled" : "executing",
+    progress: { hopsCompleted: hopsDone, hopsTotal: s.hops },
+    lastError: null,
+    signatures: {
+      routeInit: s.startedAt === null ? [] : [fakeSig(`${s.id}r`)],
+      sessionInit: [],
+      hops: Array.from({ length: hopsDone }, (_, i) => fakeSig(`${s.id}h${i}`)),
+    },
+    isTest: true,
+    createdAt: new Date(s.createdAt).toISOString(),
+    completedAt: done
+      ? new Date(hopsEnd + (s.destinations?.length ?? 0) * PAYOUT_MS).toISOString()
+      : null,
+    expiresAt: new Date(s.createdAt + 30 * 60_000).toISOString(),
+  };
+}
+
 export class MockMhApi implements MhApi {
   readonly mock = true;
-  private sims = new Map<number, Sim>();
-  private nextId = 1001;
 
-  private quote(amountRaw: bigint, isSol: boolean, hops: number) {
-    const flat = BigInt(FLAT_PER_HOP * hops);
-    // Fee is charged on the delivered amount: hop + floor(hop*bps/1e4) <= spendable.
-    const spendable = isSol ? amountRaw - flat : amountRaw;
-    if (spendable <= 0n) throw new MhError("MH_016", "Amount does not cover the fee", 400);
-    let hop = (spendable * 10_000n) / BigInt(10_000 + PERCENT_FEE_BPS);
-    while (hop + (hop * BigInt(PERCENT_FEE_BPS)) / 10_000n < spendable) hop += 1n;
-    while (hop + (hop * BigInt(PERCENT_FEE_BPS)) / 10_000n > spendable) hop -= 1n;
-    return { hop, fee: (hop * BigInt(PERCENT_FEE_BPS)) / 10_000n, flat };
+  constructor(private store: SimStore = new MemorySimStore()) {}
+
+  private async find(pred: (s: SimState) => boolean): Promise<SimState> {
+    const s = (await this.store.all()).find(pred);
+    if (!s) throw new MhError("MH_030", "Transfer not found", 404);
+    return s;
   }
 
   async estimate(req: EstimateRequest): Promise<FeeEstimate> {
     const hops = req.hops ?? 3;
     if (hops < 3 || hops > 10) throw new MhError("MH_013", "Hops out of range (3-10)", 400);
-    const isSol = req.tokenMint === SOL_MINT;
-    const q = this.quote(BigInt(req.amountRaw), isSol, hops);
+    const q = quote(BigInt(req.amountRaw), req.tokenMint === SOL_MINT, hops);
     const dests = req.destinationCount ?? 1;
     const screening = SCREENING_PER_WALLET * (hops + 1 + dests);
     const rent = 29_000_000 + 2_100_000 * dests;
@@ -81,15 +188,13 @@ export class MockMhApi implements MhApi {
   }
 
   async createTransfer(req: CreateTransferRequest): Promise<Transfer> {
+    const existing = await this.store.all();
     if (req.externalId) {
-      for (const s of this.sims.values()) {
-        if (s.transfer.externalId === req.externalId) return this.view(s);
-      }
+      const dup = existing.find((s) => s.externalId === req.externalId);
+      if (dup) return viewTransfer(dup);
     }
     const hops = req.hops ?? 3;
-    const isSol = req.tokenMint === SOL_MINT;
-    const q = this.quote(BigInt(req.amountRaw), isSol, hops);
-    let destinations: Transfer["destinations"] = null;
+    quote(BigInt(req.amountRaw), req.tokenMint === SOL_MINT, hops); // validates the amount covers fees
     if (req.destinations) {
       if (req.destinations.length < 1 || req.destinations.length > 20) {
         throw new MhError("MH_017", "Between 1 and 20 destinations are allowed", 400);
@@ -98,105 +203,42 @@ export class MockMhApi implements MhApi {
       if (total !== BigInt(req.amountRaw)) {
         throw new MhError("MH_017", "Destination shares must sum to amountRaw exactly", 400);
       }
-      let assigned = 0n;
-      destinations = req.destinations.map((d, i, all) => {
-        const amt = i === all.length - 1 ? q.hop - assigned : (BigInt(d.amountRaw) * q.hop) / total;
-        assigned += amt;
-        return { wallet: d.wallet, amountRaw: amt.toString(), status: "pending", payoutSignature: null, paidAt: null };
-      });
     }
-    const id = this.nextId++;
-    const now = new Date();
-    const transfer: Transfer = {
-      id,
+    const state: SimState = {
+      id: existing.reduce((m, s) => Math.max(m, s.id), 1000) + 1,
       externalId: req.externalId ?? null,
-      supportBundleId: `MH-demo-${id}`,
       tokenMint: req.tokenMint,
       tokenSymbol: req.tokenSymbol ?? null,
       amountRaw: req.amountRaw,
       amountTokens: req.amountTokens,
       sourceOwner: req.sourceOwner,
       recipientWallet: req.recipientWallet ?? null,
-      destinationCount: destinations?.length ?? null,
-      destinations,
+      destinations: req.destinations?.map((d) => [d.wallet, d.amountRaw]) ?? null,
       hops,
       arrivalSeconds: req.arrivalSeconds ?? 300,
-      percentFeeBps: PERCENT_FEE_BPS,
-      percentFeeRaw: q.fee.toString(),
-      totalFlatFeeLamports: Number(q.flat),
-      recipientReceivesRaw: q.hop.toString(),
-      status: "quote",
-      phase: "quoted",
-      progress: { hopsCompleted: 0, hopsTotal: hops },
-      lastError: null,
-      signatures: { routeInit: [], sessionInit: [], hops: [] },
-      isTest: true,
-      createdAt: now.toISOString(),
-      completedAt: null,
-      expiresAt: new Date(now.getTime() + 30 * 60_000).toISOString(),
+      createdAt: Date.now(),
+      keeperFunded: false,
+      startedAt: null,
     };
-    this.sims.set(id, { transfer, keeperFunded: false, startedAt: null });
-    return this.view(this.sims.get(id)!);
-  }
-
-  private sim(id: number): Sim {
-    const s = this.sims.get(id);
-    if (!s) throw new MhError("MH_030", "Transfer not found", 404);
-    return s;
-  }
-
-  /** Advance the simulated lifecycle from wall-clock time since activation. */
-  private view(s: Sim): Transfer {
-    const t = s.transfer;
-    if (s.startedAt !== null) {
-      const elapsed = Date.now() - s.startedAt;
-      const hopsDone = Math.min(t.hops, Math.floor(elapsed / HOP_MS));
-      t.progress = { hopsCompleted: hopsDone, hopsTotal: t.hops };
-      t.signatures!.hops = Array.from({ length: hopsDone }, (_, i) => fakeSig(`${t.id}h${i}`));
-      const afterHops = elapsed - t.hops * HOP_MS;
-      if (hopsDone < t.hops) {
-        t.status = elapsed < 1500 ? "processing" : "active";
-        t.phase = "executing";
-      } else if (t.destinations) {
-        const paid = Math.min(t.destinations.length, Math.floor(afterHops / PAYOUT_MS));
-        t.destinations.forEach((d, i) => {
-          if (i < paid && d.status !== "paid") {
-            d.status = "paid";
-            d.payoutSignature = fakeSig(`${t.id}p${i}`);
-            d.paidAt = new Date(s.startedAt! + t.hops * HOP_MS + (i + 1) * PAYOUT_MS).toISOString();
-          }
-        });
-        const done = paid === t.destinations.length;
-        t.status = done ? "completed" : "active";
-        t.phase = done ? "settled" : "executing";
-        if (done && !t.completedAt) t.completedAt = new Date().toISOString();
-      } else {
-        t.status = "completed";
-        t.phase = "settled";
-        if (!t.completedAt) t.completedAt = new Date().toISOString();
-      }
-    }
-    return structuredClone(t);
+    await this.store.put(state);
+    return viewTransfer(state);
   }
 
   async prepare(id: number): Promise<PrepareResponse> {
-    const s = this.sim(id);
-    if (["completed", "refunded", "expired"].includes(s.transfer.status)) {
+    const s = await this.find((x) => x.id === id);
+    const transfer = viewTransfer(s);
+    if (transfer.status === "completed") {
       throw new MhError("MH_035", "Transfer not in a state that allows this operation", 409);
     }
     const started = s.startedAt !== null;
-    if (!started) {
-      s.transfer.status = "awaiting_signature";
-      s.transfer.phase = "deploying";
-    }
     return {
-      transfer: this.view(s),
+      transfer,
       preparedTxs: {
         keeperFundingTx: s.keeperFunded || started ? null : "DEMO",
         routeInitTxs: started ? [] : [{ base64: "DEMO" }],
         orchestratorInitTx: started ? null : "DEMO",
         sessionInitTxs: started ? [] : ["DEMO", "DEMO"],
-        dispersionInitTxs: started || !s.transfer.destinations ? [] : ["DEMO"],
+        dispersionInitTxs: started || !s.destinations ? [] : ["DEMO"],
         recentBlockhash: "demo",
         lastValidBlockHeight: 0,
         resume: { nothingToDo: started, routeAlreadyDeployed: started },
@@ -205,40 +247,36 @@ export class MockMhApi implements MhApi {
   }
 
   async confirmBroadcast(id: number, body: ConfirmBroadcastRequest): Promise<Transfer> {
-    const s = this.sim(id);
+    const s = await this.find((x) => x.id === id);
     if (body.keeperFundingSignature) s.keeperFunded = true;
     if (body.routeInitSignatures.length > 0) {
       if (!s.keeperFunded) throw new MhError("MH_039", "keeperFundingSignature is required", 400);
-      if (s.transfer.destinations && !body.dispersionInitSignatures?.length) {
+      if (s.destinations && !body.dispersionInitSignatures?.length) {
         throw new MhError("MH_041", "Destinations not yet bound on chain", 409);
       }
-      s.transfer.signatures!.routeInit = body.routeInitSignatures;
-      s.transfer.signatures!.sessionInit = body.sessionInitSignatures ?? [];
       if (s.startedAt === null) s.startedAt = Date.now();
     }
-    return this.view(s);
+    await this.store.put(s);
+    return viewTransfer(s);
   }
 
   async getTransfer(id: number): Promise<Transfer> {
-    return this.view(this.sim(id));
+    return viewTransfer(await this.find((x) => x.id === id));
   }
 
   async getByExternalId(externalId: string): Promise<Transfer> {
-    for (const s of this.sims.values()) {
-      if (s.transfer.externalId === externalId) return this.view(s);
-    }
-    throw new MhError("MH_030", "Transfer not found", 404);
+    return viewTransfer(await this.find((x) => x.externalId === externalId));
   }
 
   async listTransfers(q: { limit?: number; offset?: number }): Promise<TransferList> {
-    const all = [...this.sims.values()].map((s) => this.view(s)).reverse();
+    const all = (await this.store.all()).sort((a, b) => b.id - a.id).map((s) => viewTransfer(s));
     const limit = q.limit ?? 50;
     const offset = q.offset ?? 0;
     return { items: all.slice(offset, offset + limit), pagination: { total: all.length, limit, offset } };
   }
 
   async usage(): Promise<UsageSummary> {
-    const all = [...this.sims.values()].map((s) => this.view(s));
+    const all = (await this.store.all()).map((s) => viewTransfer(s));
     return {
       totalTransfers: all.length,
       completedTransfers: all.filter((t) => t.status === "completed").length,

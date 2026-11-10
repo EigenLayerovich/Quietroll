@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "@/components/Providers";
 import {
+  DEMO_MAX_ROUTES,
   MAX_DESTINATIONS,
   chunkRows,
   externalIdFor,
@@ -83,6 +84,7 @@ export default function Composer() {
   }, [text, mint, feeMode, arrival, hops, perRoute]);
 
   if (!token) return <p className="muted">Loading…</p>;
+  const overDemoLimit = !!app.config?.mock && routes.length > DEMO_MAX_ROUTES;
   const isSol = token.mint === SOL_MINT;
 
   function loadSample() {
@@ -285,11 +287,17 @@ export default function Composer() {
           <button
             className="btn btn-primary"
             onClick={getQuote}
-            disabled={parsed.rows.length === 0 || parsed.errors.length > 0 || quoting !== null}
+            disabled={parsed.rows.length === 0 || parsed.errors.length > 0 || quoting !== null || overDemoLimit}
           >
             {quoting ?? "Get exact quote"}
           </button>
           {parsed.rows.length === 0 && <span className="muted small">Add at least one recipient to get a quote.</span>}
+          {overDemoLimit && (
+            <span className="muted small">
+              Demo mode handles up to {DEMO_MAX_ROUTES} routes per run. Remove some recipients or raise "Recipients per
+              route".
+            </span>
+          )}
         </div>
         {error && (
           <div className="notice notice-bad" role="alert">

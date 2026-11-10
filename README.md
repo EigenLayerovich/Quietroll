@@ -12,8 +12,8 @@ Entry for the [MultiHopper Build & Route Challenge](https://superteam.fun/earn/l
 
 | | |
 | - | - |
-| Unit tests (`npm test`) | 23 passing: sheet parsing, decimal maths, fee gross-up, share splitting, sign-in, transaction ordering and signature preservation |
-| Browser test, demo mode | Passing: sign in, quote, send two routes, all recipients paid, CSV export |
+| Unit tests (`npm test`) | 27 passing: sheet parsing, decimal maths, fee gross-up, share splitting, sign-in, transaction ordering and signature preservation, stateless demo store |
+| Browser test, demo mode | Passing: sign in, quote, send two routes, all recipients paid, CSV export; also with the server restarted mid-payout |
 | Against the live MultiHopper API | **Not yet run.** No API key was available when this was built. Do the devnet checklist below before any mainnet use. |
 
 ## Run it
@@ -37,7 +37,7 @@ To use the real API, copy `.env.example` to `.env.local` and fill it in:
 | `MH_API_BASE` | `https://devnet.multihopper.com` or `https://multihopper.com` |
 | `SOLANA_RPC_URL` | RPC used to broadcast. Use a paid endpoint on mainnet. Server-side only. |
 | `NEXT_PUBLIC_SOLANA_CLUSTER` | `devnet` or `mainnet`: selects token mints and explorer links |
-| `SESSION_SECRET` | 32+ random characters (`openssl rand -hex 32`). Required once a key is set. |
+| `SESSION_SECRET` | 32+ random characters (`openssl rand -hex 32`). Required once a key is set, and always on Vercel. |
 
 ## How the integration works
 
@@ -68,6 +68,9 @@ browser                         Quietroll server                MultiHopper API 
   (`src/lib/quote.ts`, `src/lib/batch.ts`).
 - **No database.** Runs are rebuilt from MultiHopper by external id. Recipient names live only in the
   sender's browser (`src/lib/store.ts`).
+- **Stateless server.** Nothing is held in server memory, so it runs on serverless hosts. In demo mode the
+  simulated routes live in the visitor's cookies (`src/lib/mh/mock-cookie-store.ts`), which limits a demo
+  run to 6 routes.
 
 Key files: `src/lib/mh/client.ts` (API client), `src/lib/deploy.ts` (sign and broadcast),
 `src/lib/quote.ts` (pricing), `src/lib/session.ts` (wallet sign-in), `src/lib/mh/mock.ts` (demo simulator).
@@ -92,7 +95,7 @@ Then mainnet:
    fails with `MH_091`.
 5. Ask in the [builder chat](https://t.me/multihopperbuilderportal) how your integration is identified for
    the challenge. The rules require this before volume counts.
-6. Deploy (Vercel works as-is), set the env vars with `NEXT_PUBLIC_SOLANA_CLUSTER=mainnet`, and send a small
+6. Deploy to Vercel, set the env vars with `NEXT_PUBLIC_SOLANA_CLUSTER=mainnet`, redeploy, and send a small
    real payout yourself before inviting anyone.
 
 ## Challenge evidence

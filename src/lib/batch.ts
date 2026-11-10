@@ -6,6 +6,8 @@ import { PublicKey } from "@solana/web3.js";
 
 /** MultiHopper pays at most 20 destinations from one route. */
 export const MAX_DESTINATIONS = 20;
+/** Demo mode keeps its simulated routes in cookies, which caps how many fit. */
+export const DEMO_MAX_ROUTES = 6;
 /** A SOL payout creates the destination account, so it must clear rent. */
 export const SOL_RENT_EXEMPT_LAMPORTS = 890_880n;
 

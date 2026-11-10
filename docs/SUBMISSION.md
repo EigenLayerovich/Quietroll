@@ -54,7 +54,7 @@ Finance leads also need to show that payees were screened, and they need receipt
 - Wallet sign-in (signed message, HMAC session cookie). `sourceOwner` is always the session wallet, and
   every transfer read or action checks ownership server-side.
 - Recipient names never leave the sender's browser.
-- 23 automated tests cover the payment maths, sign-in and transaction handling.
+- 27 automated tests cover the payment maths, sign-in and transaction handling.
 
 ## Traction (window: 21 Oct to 30 Nov 2026)
 
