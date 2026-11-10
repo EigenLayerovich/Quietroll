@@ -25,7 +25,13 @@ function statusOf(t: Transfer | null | undefined): { label: string; tone: Tone; 
     case "awaiting_signature":
       return { label: "Awaiting your approval", tone: "warn", sendable: true, live: false };
     case "processing":
-      return { label: "Screening", tone: "warn", sendable: false, live: true };
+      // MultiHopper reports `processing` once the keeper is funded, even if
+      // the rest of the route was never broadcast. While the phase is still
+      // pre-execution, keep Send available so an interrupted deploy can be
+      // resumed; resuming a route that is in fact complete sends nothing.
+      return t.phase && t.phase !== "executing" && t.phase !== "settled"
+        ? { label: "Deploying", tone: "warn", sendable: true, live: true }
+        : { label: "Screening", tone: "warn", sendable: false, live: true };
     case "active":
       return { label: "Routing", tone: "warn", sendable: false, live: true };
     case "completed":

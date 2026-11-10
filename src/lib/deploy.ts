@@ -100,9 +100,11 @@ export async function deployTransfer(transferId: number, deps: DeployDeps): Prom
     // /prepare is resumable: after a partial broadcast it returns a fresh
     // blockhash and only the groups that are still missing on chain.
     const { transfer, preparedTxs } = await call<PrepareResponse>(`/api/transfers/${transferId}/prepare`, {});
-    if (RUNNING.includes(transfer.status)) return transfer;
-
+    // Trust the bundle, not the status: the API reports `processing` as soon
+    // as it sees the keeper funding, while the route itself may still be
+    // undeployed. Only an empty bundle means there is nothing left to send.
     const pending = orderBundle(preparedTxs);
+    if (pending.length === 0 && RUNNING.includes(transfer.status)) return transfer;
     if (pending.length > 0) {
       deps.onStep("signing", `${pending.length} transaction${pending.length === 1 ? "" : "s"}, one approval`);
       const signed = deps.mock ? [] : await deps.signAll(pending.map((p) => decodeTx(p.base64)));
@@ -122,7 +124,12 @@ export async function deployTransfer(transferId: number, deps: DeployDeps): Prom
             sigs.keeper = sig;
             // Record keeper funding immediately so an interrupted deploy can
             // never be asked to fund the keeper twice.
-            await confirm({ routeInitSignatures: [], keeperFundingSignature: sig });
+            // For multi-destination routes the API answers MH_041 here until
+            // the recipients are bound; the funding is still found on chain
+            // by the next /prepare or confirm, so that answer is not an error.
+            await confirm({ routeInitSignatures: [], keeperFundingSignature: sig }).catch((e) => {
+              if (!(e instanceof ApiError && e.code === "MH_041")) throw e;
+            });
           } else if (group === "orchestrator") sigs.orchestrator = sig;
           else sigs[group].push(sig);
 

@@ -16,7 +16,7 @@ Live demo: <https://quietroll.vercel.app> (demo mode: payouts are simulated unti
 | - | - |
 | Unit tests (`npm test`) | 27 passing: sheet parsing, decimal maths, fee gross-up, share splitting, sign-in, transaction ordering and signature preservation, stateless demo store |
 | Browser test, demo mode | Passing: sign in, quote, send two routes, all recipients paid, CSV export; also with the server restarted mid-payout |
-| Against the live MultiHopper API | **Not yet run.** No API key was available when this was built. Do the devnet checklist below before any mainnet use. |
+| Against the live MultiHopper API (devnet) | Passing through the deployed site with a scripted wallet: a 1-recipient and a 3-recipient SOL payout, delivered and verified on chain, including resuming an interrupted deploy without funding the keeper twice. **Not yet run:** signing in a browser wallet (Phantom, Solflare), USDC, and anything on mainnet. |
 
 ## Run it
 
